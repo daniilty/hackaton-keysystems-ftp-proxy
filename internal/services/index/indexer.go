@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"io/fs"
@@ -178,6 +180,7 @@ func (i *Indexer) handleFile(name string, fName string) error {
 			fReader, err := f.Open()
 			if err != nil {
 				log.Println("failed to open zip file:", err)
+
 				continue
 			}
 
@@ -185,6 +188,7 @@ func (i *Indexer) handleFile(name string, fName string) error {
 			if err != nil {
 				fReader.Close()
 				log.Println("read file:", err)
+
 				continue
 			}
 
@@ -197,6 +201,24 @@ func (i *Indexer) handleFile(name string, fName string) error {
 					Name: f.Name,
 					Sum:  md5Sum,
 				})
+
+				xmlDec := xml.NewDecoder(bytes.NewReader(bb))
+				data := &model.Data{}
+				err = xmlDec.Decode(data)
+				if err != nil {
+					log.Println("xml decode:", err)
+					fReader.Close()
+
+					continue
+				}
+
+				bb, err = json.Marshal(&data.Contract)
+				if err != nil {
+					log.Println("json marshal:", err)
+					fReader.Close()
+
+					continue
+				}
 
 				err = i.publisher.SendContract(bb)
 				if err != nil {
@@ -217,9 +239,21 @@ func (i *Indexer) handleFile(name string, fName string) error {
 				Sum:  md5Sum,
 			})
 
-			err = i.publisher.SendContract(buf)
+			xmlDec := xml.NewDecoder(bytes.NewReader(buf))
+			data := &model.Data{}
+			err = xmlDec.Decode(data)
 			if err != nil {
-				log.Println("send contract amqp:", err)
+				return fmt.Errorf("xml decode: %w", err)
+			}
+
+			bb, err := json.Marshal(&data.Contract)
+			if err != nil {
+				return fmt.Errorf("json marshal: %w", err)
+			}
+
+			err = i.publisher.SendContract(bb)
+			if err != nil {
+				return fmt.Errorf("send contract amqp: %w", err)
 			}
 		}
 	}

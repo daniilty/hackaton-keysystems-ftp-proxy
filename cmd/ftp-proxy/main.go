@@ -35,6 +35,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
 	rconn, err := amqp.Dial(cfg.RabbitConnAddr)
 	if err != nil {
 		panic(err)
