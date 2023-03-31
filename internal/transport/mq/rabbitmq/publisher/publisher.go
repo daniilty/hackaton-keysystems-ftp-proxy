@@ -9,22 +9,21 @@ type Publisher interface {
 }
 
 type publisher struct {
-	channel *amqp.Channel
+	channel  *amqp.Channel
+	exchange string
 }
 
-func NewPublisher(channel *amqp.Channel) Publisher {
+func NewPublisher(channel *amqp.Channel, exchange string) Publisher {
 	return &publisher{
-		channel: channel,
+		channel:  channel,
+		exchange: exchange,
 	}
 }
 
 func (p *publisher) SendContract(data []byte) error {
-	const (
-		exchange    = "contracts.changes"
-		contentType = "application/json"
-	)
+	const contentType = "application/json"
 
-	return p.channel.Publish(exchange, "*", false, false, amqp.Publishing{
+	return p.channel.Publish(p.exchange, "*", false, false, amqp.Publishing{
 		Headers: amqp.Table{
 			"content-type": contentType,
 		},

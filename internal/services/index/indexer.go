@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
-	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"io/fs"
@@ -17,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/model"
+	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/repository"
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/transport/mq/rabbitmq/publisher"
 	"github.com/secsy/goftp"
 )
@@ -30,9 +29,11 @@ type Indexer struct {
 	path      string
 	cache     *sumCache
 	publisher publisher.Publisher
+	db        repository.DB
+	syncer    *syncer
 }
 
-func NewIndexer(interval time.Duration, client *goftp.Client, publisher publisher.Publisher, path string) *Indexer {
+func NewIndexer(interval time.Duration, syncInterval time.Duration, client *goftp.Client, publisher publisher.Publisher, db repository.DB, path string) *Indexer {
 	return &Indexer{
 		interval: interval,
 		client:   client,
@@ -45,11 +46,34 @@ func NewIndexer(interval time.Duration, client *goftp.Client, publisher publishe
 		},
 		path:      path,
 		publisher: publisher,
+		db:        db,
+		syncer:    newSyncer(syncInterval, db),
 	}
+}
+
+func (i *Indexer) initCache(ctx context.Context) error {
+	sums, err := i.db.GetSums(ctx)
+	if err != nil {
+		return fmt.Errorf("get db sums: %w", err)
+	}
+
+	for _, s := range sums {
+		i.cache.set(s.Name, s.Sum)
+	}
+
+	log.Println("initialized cache, records:", len(sums))
+	return nil
 }
 
 func (i *Indexer) Run(ctx context.Context) {
 	ticker := time.NewTicker(i.interval)
+
+	go func() {
+		err := i.syncer.run(ctx)
+		if err != nil {
+			log.Println("run syncer", err)
+		}
+	}()
 
 	for {
 		err := i.checkDirs()
@@ -96,7 +120,7 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 		}
 
 		log.Println("handle file", path.Join(name, info.Name()))
-		err := i.handleFile(path.Join(name, info.Name()), info.Size())
+		err := i.handleFile(path.Join(name, info.Name()), info.Name())
 		if err != nil {
 			return fmt.Errorf("handle file: %w", err)
 		}
@@ -105,7 +129,7 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 	return nil
 }
 
-func (i *Indexer) handleFile(name string, size int64) error {
+func (i *Indexer) handleFile(name string, fName string) error {
 	var buf []byte
 
 	bufP, ok := i.bufPool.Get().(*[]byte)
@@ -126,14 +150,16 @@ func (i *Indexer) handleFile(name string, size int64) error {
 		return nil
 	}
 
-	log.Println("retrieve file", name, size)
+	log.Println("retrieve file", name, fName)
 	buf = buffer.Bytes()
 	defer func() {
 		i.bufPool.Put(&buf)
 	}()
-	bufferAt := bytes.NewReader(buf)
+
 	switch strings.ToLower(name[len(name)-3:]) {
 	case "zip":
+		bufferAt := bytes.NewReader(buf)
+
 		zipReader, err := zip.NewReader(bufferAt, int64(len(buf)))
 		if err != nil {
 			return fmt.Errorf("zip new reader: %w", err)
@@ -162,6 +188,11 @@ func (i *Indexer) handleFile(name string, size int64) error {
 			if md5Sum != oldSum {
 				i.cache.set(f.Name, md5Sum)
 
+				i.syncer.pushOp(&model.MD5Sum{
+					Name: f.Name,
+					Sum:  md5Sum,
+				})
+
 				err = i.publisher.SendContract(bb)
 				if err != nil {
 					log.Println("send contract amqp:", err)
@@ -171,20 +202,24 @@ func (i *Indexer) handleFile(name string, size int64) error {
 			fReader.Close()
 		}
 	case "xml":
-		dec := xml.NewDecoder(buffer)
-		dat := &model.Data{}
+		md5Sum := fmt.Sprintf("%x", md5.Sum(buf))
+		oldSum := i.cache.get(fName)
+		if md5Sum != oldSum {
+			i.cache.set(fName, md5Sum)
 
-		err = dec.Decode(dat)
-		if err != nil {
-			return fmt.Errorf("xml decode: %w", err)
+			i.syncer.pushOp(&model.MD5Sum{
+				Name: fName,
+				Sum:  md5Sum,
+			})
+
+			err = i.publisher.SendContract(buf)
+			if err != nil {
+				log.Println("send contract amqp:", err)
+			}
 		}
 
-		bb, err := json.Marshal(dat.Contract)
-		if err != nil {
-			return fmt.Errorf("json marshal: %w", err)
-		}
-
-		log.Println(string(bb))
+		log.Println(string(buf))
 	}
+
 	return nil
 }

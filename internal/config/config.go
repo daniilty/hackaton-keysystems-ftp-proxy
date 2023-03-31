@@ -7,20 +7,26 @@ import (
 )
 
 type Config struct {
-	Host           string `json:"host"`
-	Path           string `json:"path"`
-	UserName       string `json:"username"`
-	Password       string `json:"password"`
-	ConnsPerHost   int    `json:"connsPerHost"`
-	TimeoutSeconds int    `json:"timeoutSeconds"`
+	Host                  string `json:"host"`
+	Path                  string `json:"path"`
+	UserName              string `json:"username"`
+	Password              string `json:"password"`
+	ConnsPerHost          int    `json:"connsPerHost"`
+	TimeoutSeconds        int    `json:"timeoutSeconds"`
+	SyncerIntervalSeconds int    `json:"syncerIntervalSeconds"`
 
 	RabbitConnAddr string `json:"rabbitConnAddr"`
+	Exchange       string `json:"exchange"`
+
+	PGDSN string `json:"pgDsn"`
 }
 
 func getDefault() *Config {
 	return &Config{
-		ConnsPerHost:   10,
-		TimeoutSeconds: 10,
+		ConnsPerHost:          10,
+		TimeoutSeconds:        10,
+		SyncerIntervalSeconds: 10,
+		Exchange:              "file.changes.v1",
 	}
 }
 

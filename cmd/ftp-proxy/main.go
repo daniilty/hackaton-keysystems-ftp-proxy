@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/config"
+	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/repository/postgres"
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/services/index"
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/transport/mq/rabbitmq/publisher"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -43,10 +44,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	err = channel.ExchangeDeclare(cfg.Exchange, "topic", true, false, false, false, amqp.Table{})
+	if err != nil {
+		panic(err)
+	}
 
-	pub := publisher.NewPublisher(channel)
-
-	indexer := index.NewIndexer(5*time.Hour, client, pub, cfg.Path)
+	pub := publisher.NewPublisher(channel, cfg.Exchange)
 	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT)
+	db, err := postgres.Connect(ctx, cfg.PGDSN)
+	if err != nil {
+		panic(err)
+	}
+	indexer := index.NewIndexer(5*time.Hour, time.Second*time.Duration(cfg.SyncerIntervalSeconds), client, pub, db, cfg.Path)
+
 	indexer.Run(ctx)
 }
