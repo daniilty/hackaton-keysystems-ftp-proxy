@@ -1,0 +1,9 @@
+{
+  "host": "example.ftp.com",
+  "path": "path",
+  "username": "sample",
+  "password": "sample",
+  "connsPerHost": 10,
+  "timeoutSeconds": 10,
+  "rabbitConnAddr": "amqp://guest:guest@localhost:5672"
+}
