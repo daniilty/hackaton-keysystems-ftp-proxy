@@ -47,7 +47,7 @@ func main() {
 	}
 
 	pub := publisher.NewPublisher(channel, cfg.Exchange)
-	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT)
+	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	db, err := postgres.Connect(ctx, cfg.PGDSN)
 	if err != nil {
 		panic(err)

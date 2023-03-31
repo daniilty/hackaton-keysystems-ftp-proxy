@@ -219,6 +219,7 @@ func (i *Indexer) handleFile(name string, fName string) error {
 
 					continue
 				}
+				log.Println(string(bb))
 
 				err = i.publisher.SendContract(bb)
 				if err != nil {
