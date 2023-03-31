@@ -65,8 +65,13 @@ func (i *Indexer) initCache(ctx context.Context) error {
 	return nil
 }
 
-func (i *Indexer) Run(ctx context.Context) {
+func (i *Indexer) Run(ctx context.Context) error {
 	ticker := time.NewTicker(i.interval)
+
+	err := i.initCache(ctx)
+	if err != nil {
+		return fmt.Errorf("init cache: %w", err)
+	}
 
 	go func() {
 		err := i.syncer.run(ctx)
@@ -85,7 +90,7 @@ func (i *Indexer) Run(ctx context.Context) {
 		case <-ticker.C:
 		case <-ctx.Done():
 			log.Println("context done, exiting")
-			return
+			return nil
 		}
 	}
 }
@@ -217,8 +222,6 @@ func (i *Indexer) handleFile(name string, fName string) error {
 				log.Println("send contract amqp:", err)
 			}
 		}
-
-		log.Println(string(buf))
 	}
 
 	return nil

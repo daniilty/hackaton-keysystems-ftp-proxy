@@ -44,10 +44,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = channel.ExchangeDeclare(cfg.Exchange, "topic", true, false, false, false, amqp.Table{})
-	if err != nil {
-		panic(err)
-	}
 
 	pub := publisher.NewPublisher(channel, cfg.Exchange)
 	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT)
@@ -55,7 +51,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
 	indexer := index.NewIndexer(5*time.Hour, time.Second*time.Duration(cfg.SyncerIntervalSeconds), client, pub, db, cfg.Path)
 
-	indexer.Run(ctx)
+	err = indexer.Run(ctx)
+	if err != nil {
+		panic(err)
+	}
 }

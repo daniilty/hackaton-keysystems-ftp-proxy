@@ -23,7 +23,7 @@ func NewPublisher(channel *amqp.Channel, exchange string) Publisher {
 func (p *publisher) SendContract(data []byte) error {
 	const contentType = "application/json"
 
-	return p.channel.Publish(p.exchange, "*", false, false, amqp.Publishing{
+	return p.channel.Publish(p.exchange, "#", false, false, amqp.Publishing{
 		Headers: amqp.Table{
 			"content-type": contentType,
 		},
