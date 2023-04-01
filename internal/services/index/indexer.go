@@ -175,7 +175,7 @@ func (i *Indexer) handleZip(buf []byte) ([]byte, error) {
 		fIsXml := isXml(f.Name)
 		fIsZip := isZip(f.Name)
 
-		if !fIsXml || !fIsZip {
+		if !fIsXml && !fIsZip {
 			continue
 		}
 
