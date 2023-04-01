@@ -35,6 +35,12 @@ type Indexer struct {
 	syncer    *syncer
 }
 
+type respData struct {
+	Type              string                   `json:"type"`
+	Contract          *model.Contract          `json:"contract,omitempty"`
+	ContractProcedure *model.ContractProcedure `json:"contractProcedure,omitempty"`
+}
+
 func NewIndexer(interval time.Duration, syncInterval time.Duration, client *goftp.Client, publisher publisher.Publisher, db repository.DB, path string) *Indexer {
 	return &Indexer{
 		interval: interval,
@@ -212,14 +218,25 @@ func (i *Indexer) handleFile(name string, fName string) error {
 					continue
 				}
 
-				bb, err = json.Marshal(&data.Contract)
+				resp := &respData{}
+				if data.Contract != nil {
+					resp.Type = "contract"
+					resp.Contract = data.Contract
+					bb, err = json.Marshal(resp)
+				} else if data.ContractProcedure != nil {
+					resp.Type = "contractProcedure"
+					resp.ContractProcedure = data.ContractProcedure
+					bb, err = json.Marshal(resp)
+				} else {
+					fReader.Close()
+					continue
+				}
 				if err != nil {
 					log.Println("json marshal:", err)
 					fReader.Close()
 
 					continue
 				}
-				log.Println(string(bb))
 
 				err = i.publisher.SendContract(bb)
 				if err != nil {
