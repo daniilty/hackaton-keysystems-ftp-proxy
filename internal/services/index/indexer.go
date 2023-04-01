@@ -7,7 +7,6 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -104,16 +103,19 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 	log.Println("read dir", name)
 	for _, info := range dir {
 		if info.IsDir() {
-			dPath := path.Join(name, info.Name())
-			d, err := i.client.ReadDir(dPath)
-			if err != nil {
-				return fmt.Errorf("read dir: %w", err)
-			}
+			go func(name string, info fs.FileInfo) {
+				dPath := path.Join(name, info.Name())
+				d, err := i.client.ReadDir(dPath)
+				if err != nil {
+					log.Println("read dir:", err)
+					return
+				}
 
-			err = i.readDir(dPath, d)
-			if err != nil {
-				log.Println(err)
-			}
+				err = i.readDir(dPath, d)
+				if err != nil {
+					log.Println(err)
+				}
+			}(name, info)
 
 			continue
 		}
@@ -215,9 +217,7 @@ func (i *Indexer) handleZip(buf []byte) ([]byte, error) {
 			data := &model.Data{}
 			err = xmlDec.Decode(data)
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					log.Println("eof:", err)
-				}
+				log.Println("xml decode:", err)
 				fReader.Close()
 
 				continue
