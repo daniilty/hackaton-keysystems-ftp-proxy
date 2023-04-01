@@ -23,6 +23,7 @@ import (
 )
 
 type Indexer struct {
+	sema      chan struct{}
 	bufPool   *bytebufferpool.Pool
 	interval  time.Duration
 	client    *goftp.Client
@@ -34,7 +35,17 @@ type Indexer struct {
 }
 
 func NewIndexer(interval time.Duration, syncInterval time.Duration, client *goftp.Client, publisher publisher.Publisher, db repository.DB, path string) *Indexer {
+	const semaphoreSize = 20
+
+	sema := make(chan struct{}, semaphoreSize)
+	go func() {
+		for i := 0; i < semaphoreSize; i++ {
+			sema <- struct{}{}
+		}
+	}()
+
 	return &Indexer{
+		sema:      sema,
 		interval:  interval,
 		client:    client,
 		cache:     newSumCache(),
@@ -103,28 +114,32 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 	log.Println("read dir", name)
 	for _, info := range dir {
 		if info.IsDir() {
-			go func(name string, info fs.FileInfo) {
-				dPath := path.Join(name, info.Name())
-				d, err := i.client.ReadDir(dPath)
-				if err != nil {
-					log.Println("read dir:", err)
-					return
-				}
+			dPath := path.Join(name, info.Name())
+			d, err := i.client.ReadDir(dPath)
+			if err != nil {
+				log.Println("read dir:", err)
+				return err
+			}
 
-				err = i.readDir(dPath, d)
-				if err != nil {
-					log.Println(err)
-				}
-			}(name, info)
+			err = i.readDir(dPath, d)
+			if err != nil {
+				log.Println(err)
+			}
 
 			continue
 		}
 
-		log.Println("handle file", path.Join(name, info.Name()))
-		err := i.handleFile(path.Join(name, info.Name()), info.Name())
-		if err != nil {
-			return fmt.Errorf("handle file: %w", err)
-		}
+		go func(name string, fName string) {
+			<-i.sema
+			defer func() {
+				i.sema <- struct{}{}
+			}()
+			log.Println("handle file", name)
+			err := i.handleFile(name, fName)
+			if err != nil {
+				log.Println("handle file:", err)
+			}
+		}(path.Join(name, info.Name()), info.Name())
 	}
 
 	return nil
