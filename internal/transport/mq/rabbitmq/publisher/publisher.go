@@ -1,11 +1,14 @@
 package publisher
 
 import (
+	"context"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type Publisher interface {
-	SendContract([]byte) error
+	SendContract(context.Context, []byte) error
+	SendContractProcedure(context.Context, []byte) error
 }
 
 type publisher struct {
@@ -20,10 +23,21 @@ func NewPublisher(channel *amqp.Channel, exchange string) Publisher {
 	}
 }
 
-func (p *publisher) SendContract(data []byte) error {
+func (p *publisher) SendContract(ctx context.Context, data []byte) error {
 	const contentType = "application/json"
 
-	return p.channel.Publish(p.exchange, "#", false, false, amqp.Publishing{
+	return p.channel.PublishWithContext(ctx, p.exchange, "contract", false, false, amqp.Publishing{
+		Headers: amqp.Table{
+			"content-type": contentType,
+		},
+		Body: data,
+	})
+}
+
+func (p *publisher) SendContractProcedure(ctx context.Context, data []byte) error {
+	const contentType = "application/json"
+
+	return p.channel.PublishWithContext(ctx, p.exchange, "contract-procedure", false, false, amqp.Publishing{
 		Headers: amqp.Table{
 			"content-type": contentType,
 		},

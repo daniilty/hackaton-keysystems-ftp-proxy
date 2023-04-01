@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,8 +23,6 @@ import (
 	"github.com/valyala/bytebufferpool"
 )
 
-const bufSize = 10 * 1024 * 1024
-
 type Indexer struct {
 	bufPool   *bytebufferpool.Pool
 	interval  time.Duration
@@ -33,12 +32,6 @@ type Indexer struct {
 	publisher publisher.Publisher
 	db        repository.DB
 	syncer    *syncer
-}
-
-type respData struct {
-	Type              string                   `json:"type"`
-	Contract          *model.Contract          `json:"contract,omitempty"`
-	ContractProcedure *model.ContractProcedure `json:"contractProcedure,omitempty"`
 }
 
 func NewIndexer(interval time.Duration, syncInterval time.Duration, client *goftp.Client, publisher publisher.Publisher, db repository.DB, path string) *Indexer {
@@ -156,94 +149,125 @@ func (i *Indexer) handleFile(name string, fName string) error {
 		i.bufPool.Put(buf)
 	}()
 
-	switch strings.ToLower(name[len(name)-3:]) {
-	case "zip":
-		bufferAt := bytes.NewReader(buf.B)
-
-		zipReader, err := zip.NewReader(bufferAt, int64(len(buf.B)))
+	if isZip(fName) {
+		buf.B, err = i.handleZip(buf.B)
 		if err != nil {
-			return fmt.Errorf("zip new reader: %w", err)
-		}
-
-		for _, f := range zipReader.File {
-			if f.FileInfo().IsDir() {
-				continue
-			}
-
-			fReader, err := f.Open()
-			if err != nil {
-				log.Println("failed to open zip file:", err)
-
-				continue
-			}
-
-			bb, err := io.ReadAll(fReader)
-			if err != nil {
-				fReader.Close()
-				log.Println("read file:", err)
-
-				continue
-			}
-
-			if len(bb) == 0 {
-				fReader.Close()
-				continue
-			}
-
-			md5Sum := fmt.Sprintf("%x", md5.Sum(bb))
-			oldSum := i.cache.get(f.Name)
-			if md5Sum != oldSum {
-				xmlDec := xml.NewDecoder(bytes.NewReader(bb))
-				data := &model.Data{}
-				err = xmlDec.Decode(data)
-				if err != nil {
-					log.Println("xml decode:", err)
-					fReader.Close()
-
-					continue
-				}
-
-				resp := &respData{}
-				if data.Contract != nil {
-					resp.Type = "contract"
-					resp.Contract = data.Contract
-				} else if data.ContractProcedure != nil {
-					resp.Type = "contractProcedure"
-					resp.ContractProcedure = data.ContractProcedure
-				} else {
-					fReader.Close()
-					log.Println("empty data", name)
-
-					continue
-				}
-
-				bb, err = json.Marshal(resp)
-				if err != nil {
-					log.Println("json marshal:", err)
-					fReader.Close()
-
-					continue
-				}
-
-				err = i.publisher.SendContract(bb)
-				if err != nil {
-					log.Println("send contract amqp:", err)
-					fReader.Close()
-
-					continue
-				}
-
-				i.cache.set(f.Name, md5Sum)
-
-				i.syncer.pushOp(&model.MD5Sum{
-					Name: f.Name,
-					Sum:  md5Sum,
-				})
-			}
-
-			fReader.Close()
+			return err
 		}
 	}
 
 	return nil
+}
+
+func (i *Indexer) handleZip(buf []byte) ([]byte, error) {
+	bufferAt := bytes.NewReader(buf)
+
+	zipReader, err := zip.NewReader(bufferAt, int64(len(buf)))
+	if err != nil {
+		return buf, fmt.Errorf("zip new reader: %w", err)
+	}
+
+	for _, f := range zipReader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+
+		fIsXml := isXml(f.Name)
+		fIsZip := isZip(f.Name)
+
+		if !fIsXml || !fIsZip {
+			continue
+		}
+
+		fReader, err := f.Open()
+		if err != nil {
+			log.Println("failed to open zip file:", err)
+
+			continue
+		}
+
+		bb, err := io.ReadAll(fReader)
+		if err != nil {
+			fReader.Close()
+			log.Println("read file:", err)
+
+			continue
+		}
+
+		if len(bb) == 0 {
+			fReader.Close()
+			continue
+		}
+
+		if fIsZip {
+			_, err = i.handleZip(bb)
+			if err != nil {
+				fReader.Close()
+				log.Println("handle zip", err)
+				continue
+			}
+		}
+
+		md5Sum := fmt.Sprintf("%x", md5.Sum(bb))
+		oldSum := i.cache.get(f.Name)
+		if md5Sum != oldSum {
+			xmlDec := xml.NewDecoder(bytes.NewReader(bb))
+			data := &model.Data{}
+			err = xmlDec.Decode(data)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					log.Println("eof:", err)
+				}
+				fReader.Close()
+
+				continue
+			}
+
+			var pubFn func(context.Context, []byte) error
+			if data.Contract != nil {
+				pubFn = i.publisher.SendContract
+				bb, err = json.Marshal(data.Contract)
+			} else if data.ContractProcedure != nil {
+				pubFn = i.publisher.SendContractProcedure
+				bb, err = json.Marshal(data.ContractProcedure)
+			} else {
+				fReader.Close()
+				continue
+			}
+
+			if err != nil {
+				log.Println("json marshal:", err)
+				fReader.Close()
+
+				continue
+			}
+
+			err = pubFn(context.Background(), bb)
+			if err != nil {
+				log.Println("send contract amqp:", err)
+				fReader.Close()
+
+				continue
+			}
+
+			i.cache.set(f.Name, md5Sum)
+
+			i.syncer.pushOp(&model.MD5Sum{
+				Name: f.Name,
+				Sum:  md5Sum,
+			})
+		}
+
+		fReader.Close()
+	}
+
+	return buf, nil
+}
+
+func isZip(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), ".zip")
+}
+
+func isXml(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), ".xml")
 }
