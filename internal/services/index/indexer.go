@@ -201,13 +201,6 @@ func (i *Indexer) handleFile(name string, fName string) error {
 			md5Sum := fmt.Sprintf("%x", md5.Sum(bb))
 			oldSum := i.cache.get(f.Name)
 			if md5Sum != oldSum {
-				i.cache.set(f.Name, md5Sum)
-
-				i.syncer.pushOp(&model.MD5Sum{
-					Name: f.Name,
-					Sum:  md5Sum,
-				})
-
 				xmlDec := xml.NewDecoder(bytes.NewReader(bb))
 				data := &model.Data{}
 				err = xmlDec.Decode(data)
@@ -222,15 +215,17 @@ func (i *Indexer) handleFile(name string, fName string) error {
 				if data.Contract != nil {
 					resp.Type = "contract"
 					resp.Contract = data.Contract
-					bb, err = json.Marshal(resp)
 				} else if data.ContractProcedure != nil {
 					resp.Type = "contractProcedure"
 					resp.ContractProcedure = data.ContractProcedure
-					bb, err = json.Marshal(resp)
 				} else {
 					fReader.Close()
+					log.Println("empty data", name)
+
 					continue
 				}
+
+				bb, err = json.Marshal(resp)
 				if err != nil {
 					log.Println("json marshal:", err)
 					fReader.Close()
@@ -241,7 +236,17 @@ func (i *Indexer) handleFile(name string, fName string) error {
 				err = i.publisher.SendContract(bb)
 				if err != nil {
 					log.Println("send contract amqp:", err)
+					fReader.Close()
+
+					continue
 				}
+
+				i.cache.set(f.Name, md5Sum)
+
+				i.syncer.pushOp(&model.MD5Sum{
+					Name: f.Name,
+					Sum:  md5Sum,
+				})
 			}
 
 			fReader.Close()
