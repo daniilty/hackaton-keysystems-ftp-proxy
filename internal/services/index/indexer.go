@@ -13,19 +13,19 @@ import (
 	"log"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/model"
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/repository"
 	"github.com/daniilty/hackaton-keysystems-ftp-proxy/internal/transport/mq/rabbitmq/publisher"
 	"github.com/secsy/goftp"
+	"github.com/valyala/bytebufferpool"
 )
 
 const bufSize = 10 * 1024 * 1024
 
 type Indexer struct {
-	bufPool   *sync.Pool
+	bufPool   *bytebufferpool.Pool
 	interval  time.Duration
 	client    *goftp.Client
 	path      string
@@ -43,15 +43,10 @@ type respData struct {
 
 func NewIndexer(interval time.Duration, syncInterval time.Duration, client *goftp.Client, publisher publisher.Publisher, db repository.DB, path string) *Indexer {
 	return &Indexer{
-		interval: interval,
-		client:   client,
-		cache:    newSumCache(),
-		bufPool: &sync.Pool{
-			New: func() any {
-				buf := make([]byte, bufSize)
-				return &buf
-			},
-		},
+		interval:  interval,
+		client:    client,
+		cache:     newSumCache(),
+		bufPool:   &bytebufferpool.Pool{},
 		path:      path,
 		publisher: publisher,
 		db:        db,
@@ -122,12 +117,10 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 				return fmt.Errorf("read dir: %w", err)
 			}
 
-			go func() {
-				err = i.readDir(dPath, d)
-				if err != nil {
-					log.Println(err)
-				}
-			}()
+			err = i.readDir(dPath, d)
+			if err != nil {
+				log.Println(err)
+			}
 
 			continue
 		}
@@ -143,20 +136,15 @@ func (i *Indexer) readDir(name string, dir []fs.FileInfo) error {
 }
 
 func (i *Indexer) handleFile(name string, fName string) error {
-	var buf []byte
+	buf := i.bufPool.Get()
+	byteBuf := bytes.NewBuffer(buf.B)
 
-	bufP, ok := i.bufPool.Get().(*[]byte)
-	if !ok {
-		buf = make([]byte, bufSize)
-	} else {
-		buf = *bufP
-	}
-
-	buffer := bytes.NewBuffer(buf)
-	err := i.client.Retrieve(name, buffer)
+	err := i.client.Retrieve(name, byteBuf)
 	if err != nil {
 		return fmt.Errorf("retrieve file: %w", err)
 	}
+
+	buf.B = byteBuf.Bytes()
 
 	if len(name) < 4 {
 		log.Println("bad file", name)
@@ -164,16 +152,15 @@ func (i *Indexer) handleFile(name string, fName string) error {
 	}
 
 	log.Println("retrieve file", name, fName)
-	buf = buffer.Bytes()
 	defer func() {
-		i.bufPool.Put(&buf)
+		i.bufPool.Put(buf)
 	}()
 
 	switch strings.ToLower(name[len(name)-3:]) {
 	case "zip":
-		bufferAt := bytes.NewReader(buf)
+		bufferAt := bytes.NewReader(buf.B)
 
-		zipReader, err := zip.NewReader(bufferAt, int64(len(buf)))
+		zipReader, err := zip.NewReader(bufferAt, int64(len(buf.B)))
 		if err != nil {
 			return fmt.Errorf("zip new reader: %w", err)
 		}
@@ -195,6 +182,11 @@ func (i *Indexer) handleFile(name string, fName string) error {
 				fReader.Close()
 				log.Println("read file:", err)
 
+				continue
+			}
+
+			if len(bb) == 0 {
+				fReader.Close()
 				continue
 			}
 
@@ -250,34 +242,6 @@ func (i *Indexer) handleFile(name string, fName string) error {
 			}
 
 			fReader.Close()
-		}
-	case "xml":
-		md5Sum := fmt.Sprintf("%x", md5.Sum(buf))
-		oldSum := i.cache.get(fName)
-		if md5Sum != oldSum {
-			i.cache.set(fName, md5Sum)
-
-			i.syncer.pushOp(&model.MD5Sum{
-				Name: fName,
-				Sum:  md5Sum,
-			})
-
-			xmlDec := xml.NewDecoder(bytes.NewReader(buf))
-			data := &model.Data{}
-			err = xmlDec.Decode(data)
-			if err != nil {
-				return fmt.Errorf("xml decode: %w", err)
-			}
-
-			bb, err := json.Marshal(&data.Contract)
-			if err != nil {
-				return fmt.Errorf("json marshal: %w", err)
-			}
-
-			err = i.publisher.SendContract(bb)
-			if err != nil {
-				return fmt.Errorf("send contract amqp: %w", err)
-			}
 		}
 	}
 

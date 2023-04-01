@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os/signal"
 	"syscall"
 	"time"
@@ -55,8 +58,12 @@ func main() {
 
 	indexer := index.NewIndexer(5*time.Hour, time.Second*time.Duration(cfg.SyncerIntervalSeconds), client, pub, db, cfg.Path)
 
-	err = indexer.Run(ctx)
-	if err != nil {
-		panic(err)
-	}
+	go func() {
+		err = indexer.Run(ctx)
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
