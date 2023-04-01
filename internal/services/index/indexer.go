@@ -144,7 +144,6 @@ func (i *Indexer) handleFile(name string, fName string) error {
 		return nil
 	}
 
-	log.Println("retrieve file", name, fName)
 	defer func() {
 		i.bufPool.Put(buf)
 	}()
@@ -202,10 +201,11 @@ func (i *Indexer) handleZip(buf []byte) ([]byte, error) {
 		if fIsZip {
 			_, err = i.handleZip(bb)
 			if err != nil {
-				fReader.Close()
 				log.Println("handle zip", err)
-				continue
 			}
+
+			fReader.Close()
+			continue
 		}
 
 		md5Sum := fmt.Sprintf("%x", md5.Sum(bb))
